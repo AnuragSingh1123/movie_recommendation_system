@@ -99,7 +99,7 @@ def load_all_models():
     knn_rotten = pickle.load(open("knn_rotten.pkl", "rb"))
     X_rotten = tfidf_rotten.transform(rotten_df["tags"])
 
-    # Bollywood (New Dataset Pickles Integration)
+    # Bollywood
     bolly_df = pickle.load(open("bolly_df.pkl", "rb"))
     tfidf_bolly = pickle.load(open("bolly_tfidf.pkl", "rb"))
     knn_bolly = pickle.load(open("bolly_knn.pkl", "rb"))
@@ -218,6 +218,58 @@ def recommend_ensemble(
     return [t for t, c in filtered_sorted][:n]
 
 
+# Multi-Row metadata filters (Step 3 helpers)
+def recommend_by_shared_genre(source_genres, exclude_titles, tmdb_df, imdb_df, rotten_df, bolly_df, imdb_rating_dict,
+                              n=5):
+    if not source_genres: return []
+    genre_keys = [g.lower().strip() for g in source_genres]
+    rows = []
+    seen = set(str(t).lower().strip() for t in exclude_titles)
+
+    for df in [tmdb_df, imdb_df, rotten_df, bolly_df]:
+        for _, row in df.iterrows():
+            title_key = str(row["title"]).lower().strip()
+            if title_key not in seen:
+                genres_in_row = [g.lower().strip() for g in row["genres"]]
+                overlap = len(set(genre_keys).intersection(genres_in_row))
+                if overlap > 0:
+                    seen.add(title_key)
+                    rating = imdb_rating_dict.get(title_key, "N/A")
+                    rows.append({"title": row["title"], "rating": rating, "overlap": overlap})
+
+    if not rows: return []
+    df_res = pd.DataFrame(rows)
+    df_res["num_rating"] = pd.to_numeric(df_res["rating"], errors="coerce").fillna(0.0)
+    df_res = df_res.sort_values(by=["overlap", "num_rating"], ascending=False)
+    return df_res.head(n)[["title", "rating"]].to_dict(orient="records")
+
+
+def recommend_by_shared_cast(source_cast, exclude_titles, tmdb_df, imdb_df, rotten_df, bolly_df, imdb_rating_dict, n=5):
+    if not source_cast: return []
+    cast_keys = [c.lower().strip() for c in source_cast]
+    rows = []
+    seen = set(str(t).lower().strip() for t in exclude_titles)
+
+    for df in [tmdb_df, imdb_df, rotten_df, bolly_df]:
+        col_name = "cast" if "cast" in df.columns else ("actors" if "actors" in df.columns else None)
+        if not col_name: continue
+        for _, row in df.iterrows():
+            title_key = str(row["title"]).lower().strip()
+            if title_key not in seen:
+                cast_in_row = parse_cast_list(row[col_name])
+                overlap = len(set(cast_keys).intersection(cast_in_row))
+                if overlap > 0:
+                    seen.add(title_key)
+                    rating = imdb_rating_dict.get(title_key, "N/A")
+                    rows.append({"title": row["title"], "rating": rating, "overlap": overlap})
+
+    if not rows: return []
+    df_res = pd.DataFrame(rows)
+    df_res["num_rating"] = pd.to_numeric(df_res["rating"], errors="coerce").fillna(0.0)
+    df_res = df_res.sort_values(by=["overlap", "num_rating"], ascending=False)
+    return df_res.head(n)[["title", "rating"]].to_dict(orient="records")
+
+
 def recommend_by_genre_all(genre, tmdb_df, imdb_df, rotten_df, bolly_df, imdb_rating_dict, n=10):
     genre_key = genre.lower().strip()
     rows = []
@@ -244,7 +296,6 @@ def recommend_by_genre_all(genre, tmdb_df, imdb_df, rotten_df, bolly_df, imdb_ra
 
 
 def get_all_movies_by_actor(actor_name, tmdb_df, imdb_df, rotten_df, bolly_df, imdb_rating_dict):
-    """Scans all dataframes to pull out EVERY movie featuring this actor, sorted top rated to least rated."""
     lookup_key = actor_name.replace(" ", "").lower().strip()
     rows = []
     seen = set()
@@ -283,9 +334,10 @@ def get_all_movies_by_actor(actor_name, tmdb_df, imdb_df, rotten_df, bolly_df, i
 
 
 # ─────────────────────────────────────────────
-# Shared card renderer
+# Shared card renderer with Discovery Logic (Step 4)
 # ─────────────────────────────────────────────
-def render_movie_card(col, name, rating=None):
+def render_movie_card(col, name, rating=None, default_reason="Curated Pick"):
+    """Renders a single movie card with fixed-height poster area and dynamic rating flags."""
     with col:
         if rating is None:
             raw = get_imdb_rating(name, imdb_rating_dict)
@@ -299,6 +351,18 @@ def render_movie_card(col, name, rating=None):
             except (TypeError, ValueError):
                 rating_val = "N/A"
 
+        # Step 4: Dynamic Discovery Logic badge selection
+        if rating_val != "N/A":
+            num_rating = float(rating_val)
+            if num_rating >= 8.2:
+                reason_text = "🏆 Masterpiece"
+            elif num_rating >= 7.5:
+                reason_text = "🔥 Highly Rated"
+            else:
+                reason_text = default_reason
+        else:
+            reason_text = default_reason
+
         display_name = name if len(name) <= 30 else name[:28] + "…"
 
         st.markdown(
@@ -308,9 +372,8 @@ def render_movie_card(col, name, rating=None):
                         line-height:1.3; margin-bottom:4px; overflow:hidden;">
                 {display_name}
               </p>
-              <p style="color:#f5c518; font-size:13px; font-weight:600;
-                        margin-bottom:6px;">
-                ⭐ {rating_val}
+              <p style="color:#f5c518; font-size:12px; font-weight:600; margin-bottom:6px;">
+                ⭐ {rating_val} &nbsp;|&nbsp; <span style="color:#888; font-weight:400; font-size:11px;">{reason_text}</span>
               </p>
             </div>
             """,
@@ -351,7 +414,7 @@ st.markdown("---")
 mode = st.radio("🔎 Search movies by:", ["Movie Title", "Genre", "Actor"])
 
 # ─────────────────────────────────────────────
-# Movie Title mode
+# Movie Title mode (Step 3 Multi-Row Output)
 # ─────────────────────────────────────────────
 if mode == "Movie Title":
     selected_movie = st.selectbox("🎥 Select a movie:", all_display_titles)
@@ -360,8 +423,20 @@ if mode == "Movie Title":
         if not selected_movie:
             st.warning("Please select a movie.")
         else:
-            st.subheader(f"Recommendations for: **{selected_movie}**")
+            # Extract underlying lookup parameters from source movie
+            source_genres = []
+            source_cast = []
+            for df in [tmdb_df, imdb_df, rotten_df, bolly_df]:
+                if selected_movie.lower().strip() in df["title_clean"].values:
+                    row = df[df["title_clean"] == selected_movie.lower().strip()].iloc[0]
+                    if "genres" in row and isinstance(row["genres"], list):
+                        source_genres = row["genres"]
+                    if "cast" in row:
+                        source_cast = parse_cast_list(row["cast"])
+                    break
 
+            # --- ROW 1: ENSEMBLE STRATEGY MATCHES ---
+            st.markdown("#### 🎯 Top Picks For You")
             recommended_titles = recommend_ensemble(
                 selected_movie,
                 tmdb_df, imdb_df, rotten_df, bolly_df,
@@ -375,7 +450,43 @@ if mode == "Movie Title":
             else:
                 cols = st.columns(5)
                 for col, name in zip(cols, recommended_titles):
-                    render_movie_card(col, name)
+                    render_movie_card(col, name, default_reason="🎯 Plot Match")
+
+            st.markdown("<div style='margin-bottom:24px'></div>", unsafe_allow_html=True)
+
+            # --- ROW 2: GENRE ALIGNED MATCHES ---
+            st.markdown("#### 🎭 More From These Genres")
+            exclude_set = [selected_movie] + recommended_titles
+            genre_recs = recommend_by_shared_genre(
+                source_genres, exclude_set,
+                tmdb_df, imdb_df, rotten_df, bolly_df,
+                imdb_rating_dict, n=5
+            )
+
+            if not genre_recs:
+                st.caption("No matching structural genres located.")
+            else:
+                cols = st.columns(5)
+                for col, item in zip(cols, genre_recs):
+                    render_movie_card(col, item["title"], rating=item["rating"], default_reason="🎭 Genre Fit")
+
+            st.markdown("<div style='margin-bottom:24px'></div>", unsafe_allow_html=True)
+
+            # --- ROW 3: CAST STAR SPOTLIGHT MATCHES ---
+            st.markdown("#### 🌟 Starring Your Favorite Cast")
+            exclude_set += [item["title"] for item in genre_recs]
+            cast_recs = recommend_by_shared_cast(
+                source_cast, exclude_set,
+                tmdb_df, imdb_df, rotten_df, bolly_df,
+                imdb_rating_dict, n=5
+            )
+
+            if not cast_recs:
+                st.caption("No alternate cast-aligned films discovered.")
+            else:
+                cols = st.columns(5)
+                for col, item in zip(cols, cast_recs):
+                    render_movie_card(col, item["title"], rating=item["rating"], default_reason="🌟 Star Cast")
 
 # ─────────────────────────────────────────────
 # Genre mode
@@ -402,15 +513,15 @@ elif mode == "Genre":
             if recs.empty:
                 st.error("No rated movies found for this genre. Try a different genre.")
             else:
-                titles  = recs["title"].tolist()
+                titles = recs["title"].tolist()
                 ratings = recs["imdb_rating"].tolist()
 
                 for row_start in range(0, len(titles), 5):
-                    batch_titles  = titles[row_start: row_start + 5]
+                    batch_titles = titles[row_start: row_start + 5]
                     batch_ratings = ratings[row_start: row_start + 5]
                     cols = st.columns(5)
                     for col, name, rating in zip(cols, batch_titles, batch_ratings):
-                        render_movie_card(col, name, rating)
+                        render_movie_card(col, name, rating, default_reason="🎭 Genre Classic")
                     st.markdown("<div style='margin-bottom:16px'></div>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
@@ -440,13 +551,13 @@ else:
                     f"(Sorted by IMDb Rating)"
                 )
 
-                titles  = movies_df["title"].tolist()
+                titles = movies_df["title"].tolist()
                 ratings = movies_df["imdb_rating"].tolist()
 
                 for row_start in range(0, total, 5):
-                    batch_titles  = titles[row_start: row_start + 5]
+                    batch_titles = titles[row_start: row_start + 5]
                     batch_ratings = ratings[row_start: row_start + 5]
                     cols = st.columns(5)
                     for col, name, rating in zip(cols, batch_titles, batch_ratings):
-                        render_movie_card(col, name, rating)
+                        render_movie_card(col, name, rating, default_reason="🌟 Iconic Role")
                     st.markdown("<div style='margin-bottom:16px'></div>", unsafe_allow_html=True)

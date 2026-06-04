@@ -51,9 +51,53 @@ st.markdown("""
 
 OMDB_API_KEY = "7fc646d4"
 
-# FIX: Changed to an ultra-reliable, developer-whitelisted asset from placehold.co
+# Ultra-reliable, developer-whitelisted asset from placehold.co
 # styled as a dark sleek movie card that can never be intercepted or blocked.
 DEFAULT_POSTER_URL = "https://placehold.co/400x600/1a1a1a/ffffff?text=No+Poster+Available"
+
+
+def extract_title_from_image(image_file, all_titles):
+    """
+    Safely extracts text from a camera snapshot using EasyOCR or Pytesseract,
+    then applies an adjacent fuzzy-string matcher to locate the closest title in the dataset.
+    """
+    try:
+        from PIL import Image
+        import io
+        import difflib
+
+        img = Image.open(image_file)
+        detected_text = ""
+
+        # 1. Try scanning via EasyOCR
+        try:
+            import easyocr
+            import numpy as np
+            reader = easyocr.Reader(['en'], gpu=False)
+            results = reader.readtext(np.array(img))
+            detected_text = " ".join([res[1] for res in results])
+        except ImportError:
+            # 2. Try scanning via Pytesseract as a local fallback
+            try:
+                import pytesseract
+                detected_text = pytesseract.image_to_string(img)
+            except ImportError:
+                st.error(
+                    "⚠️ **OCR Libraries Missing:** To use the camera poster-scanning feature, please install an OCR library in your terminal:")
+                st.code("pip install easyocr\n# OR\pip install pytesseract pillow")
+                return None
+
+        # Run fuzzy lookups if a phrase string is recovered from image arrays
+        text_clean = detected_text.strip()
+        if text_clean:
+            # Use cutoff=0.3 to remain highly permissive of stylized movie font faces and layouts
+            matches = difflib.get_close_matches(text_clean, all_titles, n=1, cutoff=0.3)
+            if matches:
+                return matches[0]
+
+    except Exception as e:
+        st.error(f"Error processing captured camera frame: {e}")
+    return None
 
 
 def fetch_poster(movie_title: str):
@@ -450,7 +494,30 @@ mode = st.radio("🔎 Search movies by:", ["Movie Title", "Genre", "Actor"])
 # Movie Title Mode
 # ─────────────────────────────────────────────
 if mode == "Movie Title":
-    selected_movie = st.selectbox("🎥 Select a movie:", all_display_titles)
+    # Check if a movie was just captured from camera to set default dropdown index
+    default_index = 0
+    if "scanned_movie" in st.session_state and st.session_state["scanned_movie"] in all_display_titles:
+        default_index = all_display_titles.index(st.session_state["scanned_movie"])
+
+    selected_movie = st.selectbox("🎥 Select a movie:", all_display_titles, index=default_index)
+
+    # Cohesive Expandable Row for Live Media Image Scanning
+    with st.expander("📷 Scan Movie Poster or Title Text via Camera"):
+        cam_image = st.camera_input("Take a photo of the movie name or poster")
+        if cam_image:
+            with st.spinner("Processing image pixels and extracting title text..."):
+                scanned_name = extract_title_from_image(cam_image, all_display_titles)
+                if scanned_name:
+                    st.success(f"🎯 Auto-detected Movie Match: **{scanned_name}**")
+                    st.session_state["scanned_movie"] = scanned_name
+                    # Cross-version standard safe viewport refresh triggers
+                    if hasattr(st, "rerun"):
+                        st.rerun()
+                    else:
+                        st.experimental_rerun()
+                else:
+                    st.warning(
+                        "Could not clearly identify a matching movie title from the image. Ensure text is clear, or choose from the dropdown list box above.")
 
     if st.button("🔍 Recommend"):
         if not selected_movie:

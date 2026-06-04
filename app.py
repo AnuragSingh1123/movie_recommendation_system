@@ -5,13 +5,55 @@ from collections import Counter
 import requests
 import ast
 
+# ─────────────────────────────────────────────
+# Page Configurations & Mobile Responsive UI Styling
+# ─────────────────────────────────────────────
 st.set_page_config(
     page_title="Movie Recommendation System",
     page_icon="🎬",
     layout="wide"
 )
 
+# Custom Streaming Application CSS Injection (Handles Mobile Scaling)
+st.markdown("""
+    <style>
+    /* Elegant movie card border-radius and smooth hover transitions */
+    div[data-testid="stImage"] img {
+        border-radius: 8px !important;
+        object-fit: cover !important;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
+    }
+    div[data-testid="stImage"] img:hover {
+        transform: scale(1.03);
+        box-shadow: 0 8px 12px rgba(245, 197, 24, 0.2);
+    }
+
+    /* ENHANCED MOBILE RESPONSIVENESS PATCH */
+    /* When Streamlit columns wrap vertically on smartphones, fluidly scale 
+       and center posters so they never look artificially blown-up or overly large. */
+    @media (max-width: 768px) {
+        div[data-testid="stImage"] img {
+            max-width: 65% !important;
+            height: auto !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            display: block !important;
+        }
+        /* Keep text centered and clean on narrow screen layouts */
+        div[style*="text-align:center"] {
+            margin-top: 12px;
+            margin-bottom: 8px;
+        }
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 OMDB_API_KEY = "7fc646d4"
+
+# FIX: Changed to an ultra-reliable, developer-whitelisted asset from placehold.co
+# styled as a dark sleek movie card that can never be intercepted or blocked.
+DEFAULT_POSTER_URL = "https://placehold.co/400x600/1a1a1a/ffffff?text=No+Poster+Available"
 
 
 def fetch_poster(movie_title: str):
@@ -218,7 +260,6 @@ def recommend_ensemble(
     return [t for t, c in filtered_sorted][:n]
 
 
-# Multi-Row metadata filters (Step 3 helpers)
 def recommend_by_shared_genre(source_genres, exclude_titles, tmdb_df, imdb_df, rotten_df, bolly_df, imdb_rating_dict,
                               n=5):
     if not source_genres: return []
@@ -334,10 +375,10 @@ def get_all_movies_by_actor(actor_name, tmdb_df, imdb_df, rotten_df, bolly_df, i
 
 
 # ─────────────────────────────────────────────
-# Shared card renderer with Discovery Logic (Step 4)
+# Shared Card Renderer with Default Fallback & Scaling
 # ─────────────────────────────────────────────
 def render_movie_card(col, name, rating=None, default_reason="Curated Pick"):
-    """Renders a single movie card with fixed-height poster area and dynamic rating flags."""
+    """Renders a single movie card with automatic fallback placeholder and mobile view constraints."""
     with col:
         if rating is None:
             raw = get_imdb_rating(name, imdb_rating_dict)
@@ -351,7 +392,7 @@ def render_movie_card(col, name, rating=None, default_reason="Curated Pick"):
             except (TypeError, ValueError):
                 rating_val = "N/A"
 
-        # Step 4: Dynamic Discovery Logic badge selection
+        # Dynamic Discovery Logic badge selection
         if rating_val != "N/A":
             num_rating = float(rating_val)
             if num_rating >= 8.2:
@@ -380,24 +421,16 @@ def render_movie_card(col, name, rating=None, default_reason="Curated Pick"):
             unsafe_allow_html=True,
         )
 
+        # Poster lookup with fallback configuration handling
         poster_url = fetch_poster(name)
-        if poster_url:
-            st.image(poster_url, use_container_width=True)
-        else:
-            st.markdown(
-                """
-                <div style="height:220px; background:#1e1e1e; border-radius:8px;
-                            display:flex; align-items:center; justify-content:center;
-                            color:#666; font-size:12px; text-align:center;">
-                  🎬<br>No Poster
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        if not poster_url:
+            poster_url = DEFAULT_POSTER_URL
+
+        st.image(poster_url, use_container_width=True)
 
 
 # ─────────────────────────────────────────────
-# Page header
+# Page Header Rendering
 # ─────────────────────────────────────────────
 st.markdown(
     "<h1 style='text-align: center;'>🎬 Movie Recommendation System</h1>",
@@ -414,7 +447,7 @@ st.markdown("---")
 mode = st.radio("🔎 Search movies by:", ["Movie Title", "Genre", "Actor"])
 
 # ─────────────────────────────────────────────
-# Movie Title mode (Step 3 Multi-Row Output)
+# Movie Title Mode
 # ─────────────────────────────────────────────
 if mode == "Movie Title":
     selected_movie = st.selectbox("🎥 Select a movie:", all_display_titles)
@@ -423,7 +456,6 @@ if mode == "Movie Title":
         if not selected_movie:
             st.warning("Please select a movie.")
         else:
-            # Extract underlying lookup parameters from source movie
             source_genres = []
             source_cast = []
             for df in [tmdb_df, imdb_df, rotten_df, bolly_df]:
@@ -489,7 +521,7 @@ if mode == "Movie Title":
                     render_movie_card(col, item["title"], rating=item["rating"], default_reason="🌟 Star Cast")
 
 # ─────────────────────────────────────────────
-# Genre mode
+# Genre Mode
 # ─────────────────────────────────────────────
 elif mode == "Genre":
     selected_genre = st.selectbox("🎭 Select a genre:", all_genres)
@@ -525,7 +557,7 @@ elif mode == "Genre":
                     st.markdown("<div style='margin-bottom:16px'></div>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# Actor mode
+# Actor Mode
 # ─────────────────────────────────────────────
 else:
     if not all_actors:
